@@ -1,0 +1,48 @@
+name: Prezzi Umbria da MIMIT
+on:
+  schedule:
+    - cron: '20 7 * * *'
+    - cron: '20 9 * * *'
+    - cron: '20 12 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scarica CSV MIMIT e aggiorna storico
+        run: |
+          set -euo pipefail
+          mkdir -p data/raw
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+          curl -fsSL --retry 3 --max-time 60 -A "$UA" -o raw.csv https://www.mimit.gov.it/images/stories/carburanti/MediaRegionaleStradale.csv
+          python3 - <<'EOF'
+          import re, os, shutil
+          t = open('raw.csv', encoding='utf-8-sig', errors='replace').read().splitlines()
+          m = re.search(r'(\d{2})-(\d{2})-(\d{4})', t[0])
+          d = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+          vals = {}
+          for l in t[1:]:
+              p = l.strip().split(';')
+              if len(p) >= 4 and p[0].strip().lower() == 'umbria' and p[2].strip().upper() == 'SELF':
+                  vals[p[1].strip()] = p[3].strip()
+          b = vals['Benzina']
+          g = vals['Gasolio']
+          shutil.copy('raw.csv', f'data/raw/{d}.csv')
+          f = 'data/umbria.csv'
+          rows = open(f).read().splitlines() if os.path.exists(f) else ['data,benzina,gasolio']
+          if not any(r.startswith(d + ',') for r in rows):
+              rows.append(f'{d},{b},{g}')
+              open(f, 'w').write('\n'.join(rows) + '\n')
+              print('aggiunta', d, b, g)
+          else:
+              print('gia presente', d)
+          EOF
+      - name: Commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || (git commit -m "Prezzi Umbria $(date -u +%F)" && git push)
